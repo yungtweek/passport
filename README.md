@@ -72,9 +72,9 @@ remote = "git@github.com:example/example-service.git"
 [projects.example-service.environments.development]
 aws_profile = "example-development"
 aws_account_id = "111111111111"
-aws_region = "ap-northeast-2"
+aws_region = "ap-northeast-1"
 eks_cluster = "example-development"
-kube_context = "arn:aws:eks:ap-northeast-2:111111111111:cluster/example-development"
+kube_context = "arn:aws:eks:ap-northeast-1:111111111111:cluster/example-development"
 namespace = "example-service"
 ```
 
@@ -98,7 +98,7 @@ Verify its expected AWS and Kubernetes runtime target:
 
 Typical Codex requests include:
 
-- `PER-535 작업을 prod 환경의 새 worktree에서 시작해줘.`
+- `TASK-123 작업을 staging 환경의 새 worktree에서 시작해줘.`
 - `현재 worktree의 Passport 상태를 확인해줘.`
 - `AWS/EKS 실행 대상까지 검증해줘.`
 - `이 worktree의 Passport를 제거해줘.`
