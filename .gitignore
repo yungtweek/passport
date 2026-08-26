@@ -1,0 +1,56 @@
+# Personal Passport configuration
+/projects.toml
+/projects.local.toml
+/projects.*.local.toml
+
+# Environment files and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+credentials/
+secrets/
+kubeconfig*
+.aws/
+.kube/
+
+# Local runtime state
+.direnv/
+.mise.local.toml
+*.log
+tmp/
+
+# JetBrains IDEs
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Visual Studio Code and other editors
+.vscode/
+.fleet/
+.zed/
+.history/
+.vs/
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# Eclipse
+.classpath
+.project
+.settings/
+
+# macOS and Windows
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini

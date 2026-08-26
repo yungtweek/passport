@@ -1,0 +1,24 @@
+# Worktree Passport personal configuration example.
+# Store only non-secret target names and paths. Never place credentials, tokens,
+# kubeconfig content, certificates, or env-file content in this file.
+
+[projects.example-service]
+remote = "git@github.com:example/example-service.git"
+
+[projects.example-service.environments.development]
+aws_profile = "example-development"
+aws_account_id = "111111111111"
+aws_region = "ap-northeast-2"
+eks_cluster = "example-development"
+kube_context = "arn:aws:eks:ap-northeast-2:111111111111:cluster/example-development"
+namespace = "example-service"
+
+[projects.example-service.environments.development.bootstrap]
+# Optional. If omitted, a repository-root .envrc is detected automatically.
+direnv_rc = ".envrc"
+
+# Keep one source/target pair per line. Sources are personal files; targets must
+# be inside the worktree, Git-ignored, and absent before Passport creates links.
+env_links = [
+  { source = "~/.config/worktree-passport/env/example-service/service.env", target = "service/.env" }
+]
