@@ -274,10 +274,96 @@ validate_runtime() {
   say '  namespace access: verified'
 }
 
+validate_linear_target() {
+  local root=$1 project=$2 ticket=$3 live=$4 section configured_remote remote workspace_id team_id team_key project_id project_name actual_workspace actual_team actual_project rc=0
+  if [ -z "$project" ]; then
+    say 'Linear target: not configured'
+    if $live; then
+      err 'external target verification failed: passport.project is missing'
+      return 1
+    fi
+    return 0
+  fi
+
+  section="projects.$project.targets.linear"
+  workspace_id=$(toml_get "$section" workspace_id)
+  team_id=$(toml_get "$section" team_id)
+  team_key=$(toml_get "$section" team_key)
+  project_id=$(toml_get "$section" project_id)
+  project_name=$(toml_get "$section" project_name)
+
+  if [ -z "$workspace_id$team_id$team_key$project_id$project_name" ]; then
+    say 'Linear target: not configured'
+    if $live; then
+      err "external target verification failed: Linear target is not configured for project '$project'"
+      return 1
+    fi
+    return 0
+  fi
+
+  say 'Linear target (expected):'
+  say "  workspace ID: ${workspace_id:-not configured}"
+  say "  team ID: ${team_id:-not configured}"
+  say "  team key: ${team_key:-not configured}"
+  say "  project ID: ${project_id:-not configured}"
+  say "  project name: ${project_name:-not configured}"
+
+  if [ -z "$workspace_id" ] || [ -z "$team_id" ] || [ -z "$team_key" ] || [ -z "$project_id" ] || [ -z "$project_name" ]; then
+    err "external target verification failed: incomplete Linear target for project '$project'"
+    return 1
+  fi
+
+  if [ -n "$ticket" ]; then
+    case "$ticket" in
+      "$team_key"-*) say '  ticket team match: yes' ;;
+      *)
+        say '  ticket team match: no'
+        err "external target verification failed: ticket '$ticket' does not belong to Linear team '$team_key'"
+        rc=1
+        ;;
+    esac
+  else
+    say '  ticket team match: not configured'
+    if $live; then
+      err 'external target verification failed: passport.ticket is required for Linear operations'
+      rc=1
+    fi
+  fi
+
+  if $live; then
+    configured_remote=$(toml_get "projects.$project" remote)
+    remote=$(git -C "$root" config --get remote.origin.url 2>/dev/null || true)
+    if [ -z "$configured_remote" ] || [ "$remote" != "$configured_remote" ]; then
+      err "external target verification failed: Git remote does not match project '$project'"
+      rc=1
+    fi
+
+    actual_workspace=${WORKTREE_PASSPORT_LINEAR_WORKSPACE_ID:-}
+    actual_team=${WORKTREE_PASSPORT_LINEAR_TEAM_ID:-}
+    actual_project=${WORKTREE_PASSPORT_LINEAR_PROJECT_ID:-}
+    if [ -z "$actual_workspace" ] || [ -z "$actual_team" ] || [ -z "$actual_project" ]; then
+      err 'external target verification failed: live Linear workspace/team/project IDs were not supplied; no fallback attempted'
+      rc=1
+    else
+      [ "$actual_workspace" = "$workspace_id" ] || { err 'external target verification failed: Linear workspace mismatch; no fallback attempted'; rc=1; }
+      [ "$actual_team" = "$team_id" ] || { err 'external target verification failed: Linear team mismatch; no fallback attempted'; rc=1; }
+      [ "$actual_project" = "$project_id" ] || { err 'external target verification failed: Linear project mismatch; no fallback attempted'; rc=1; }
+      [ "$rc" -ne 0 ] || say '  live Linear identity: verified'
+    fi
+  fi
+  return "$rc"
+}
+
 status_command() {
-  local runtime=false root branch common remote enabled project environment ticket owner expected rc=0
-  [ $# -le 1 ] || die 'usage: passport.sh status [--runtime]'
-  if [ $# -eq 1 ]; then [ "$1" = --runtime ] || die 'usage: passport.sh status [--runtime]'; runtime=true; fi
+  local runtime=false external=false root branch common remote enabled project environment ticket owner expected rc=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --runtime) runtime=true ;;
+      --external) external=true ;;
+      *) die 'usage: passport.sh status [--runtime] [--external]' ;;
+    esac
+    shift
+  done
   require_repo
   root=$(repo_root); common=$(common_dir); branch=$(current_branch); remote=$(remote_url)
   if worktree_config_enabled; then enabled=true; else enabled=false; fi
@@ -310,6 +396,7 @@ status_command() {
   else
     say 'Expected branch match: not configured'
   fi
+  validate_linear_target "$root" "$project" "$ticket" "$external" || rc=1
   show_bootstrap_status "$root" "$project" "$environment"
   if $runtime; then validate_runtime "$root" "$project" "$environment" || rc=1; fi
   return "$rc"
@@ -472,6 +559,7 @@ apply_command() {
     case "$expected" in *"$ticket"*) ;; *) die "ticket '$ticket' must appear in branch '$expected'" ;; esac
     if $create; then case "$(basename "$target")" in *"$ticket"*) ;; *) die "ticket '$ticket' must appear in worktree directory name" ;; esac; fi
   fi
+  validate_linear_target "$source_root" "$project" "$ticket" false || die 'Linear target validation failed; nothing was changed'
 
   say 'Worktree Passport plan:'
   say "  repository: $root"
@@ -545,7 +633,7 @@ remove_command() {
 usage() {
   cat <<'EOF'
 Usage:
-  passport.sh status [--runtime]
+  passport.sh status [--runtime] [--external]
   passport.sh apply --project NAME --environment NAME --owner NAME --expected-branch BRANCH [--ticket ID] [--create --worktree PATH --base BRANCH] [--yes]
   passport.sh remove [--yes]
 EOF

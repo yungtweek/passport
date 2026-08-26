@@ -43,6 +43,8 @@ After the expected kube context and namespace are selected:
 
 Do not run `aws configure`, `aws eks update-kubeconfig`, `kubectl config use-context`, or any cloud mutation. A missing profile, account mismatch, missing context, or inaccessible namespace is a registration blocker, not permission to try another target.
 
+If the repository uses Linear, read [linear-target.md](linear-target.md). Query the connected integration read-only and collect the intended workspace, team, and project immutable IDs plus the readable team key and project name. Do not choose the current, first, or default Linear workspace automatically. If the worktree has a ticket, require its prefix to match the selected team key.
+
 ## Build one combined preview
 
 Prepare a proposed copy of `projects.toml` in an isolated temporary directory. Preserve all existing projects, comments, and unrelated values. Add only the new project or environment section:
@@ -58,7 +60,16 @@ aws_region = "<expected-region>"
 eks_cluster = "<expected-cluster>"
 kube_context = "<selected-context>"
 namespace = "<expected-namespace>"
+
+[projects.<project>.targets.linear]
+workspace_id = "<expected-workspace-id>"
+team_id = "<expected-team-id>"
+team_key = "<expected-team-key>"
+project_id = "<expected-project-id>"
+project_name = "<expected-project-name>"
 ```
+
+Runtime and Linear sections are independently optional. Add only the targets the repository actually uses.
 
 Add a bootstrap section only for values that can be safely established:
 
@@ -74,6 +85,7 @@ Show one combined plan containing:
 - repository, remote, project key, environment, owner, branch, and optional ticket
 - verified AWS account and selected profile/region, when configured
 - selected EKS cluster, kube context, and namespace, when configured
+- selected Linear workspace, team, project, and ticket-prefix match, when configured
 - mise, direnv, and env-link changes from the `apply` dry-run
 - unchanged boundaries: project tracked files, shell configuration, credentials, kubeconfig, cloud resources, build, and deployment
 
@@ -87,7 +99,7 @@ Record a checksum of the real `projects.toml` before presenting the plan. After 
 2. If any value drifted, stop and show a refreshed plan instead of applying.
 3. Update the real personal configuration without replacing unrelated content.
 4. Run the same `passport.sh apply ... --yes` command in the target worktree.
-5. Run `passport.sh status` and, when a runtime profile was added, `passport.sh status --runtime`.
+5. Run `passport.sh status`; when a runtime profile was added, run `status --runtime`; when a Linear target was added, query its live IDs and run `status --external` as described in [linear-target.md](linear-target.md).
 
 The approval covers only the displayed personal configuration update, Passport Git metadata, and displayed local bootstrap actions. It does not authorize credential login or refresh, dependency installation, shell changes, commits, pushes, builds, cloud mutations, or deployments.
 

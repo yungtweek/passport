@@ -8,6 +8,7 @@ Worktree Passport is a personal Codex skill that keeps Git worktree identity, lo
 - Shows a complete dry-run before creating a worktree or changing Passport metadata.
 - Checks mise trust, direnv allow state, and configured Git-ignored env symlinks.
 - Verifies the selected AWS account and Kubernetes context/namespace with explicit targets.
+- Verifies a Linear ticket's workspace, team, project, and team-key prefix before issue work.
 - Stops on missing or mismatched targets instead of trying ambient defaults.
 
 Passport does not create or modify AWS profiles, kubeconfig, shell startup files, hooks, tracked project files, credentials, or deployments.
@@ -20,6 +21,7 @@ Passport does not create or modify AWS profiles, kubeconfig, shell startup files
 └── worktree-passport/
     ├── SKILL.md
     ├── references/
+    │   ├── linear-target.md
     │   └── project-initialization.md
     ├── scripts/
     │   └── passport.sh
@@ -76,9 +78,18 @@ aws_region = "ap-northeast-1"
 eks_cluster = "example-development"
 kube_context = "arn:aws:eks:ap-northeast-1:111111111111:cluster/example-development"
 namespace = "example-service"
+
+[projects.example-service.targets.linear]
+workspace_id = "workspace-id"
+team_id = "team-id"
+team_key = "TASK"
+project_id = "project-id"
+project_name = "Example Project"
 ```
 
 Store target names only. Never add access keys, secret keys, session tokens, SSO cache data, kubeconfig content, certificates, application secrets, or env-file contents.
+
+Linear IDs are non-secret target identifiers. Never store a Linear API key, OAuth token, cookie, or connector credential in this file.
 
 ## Use
 
@@ -93,6 +104,17 @@ Verify its expected AWS and Kubernetes runtime target:
 ```bash
 ~/.codex/skills/worktree-passport/scripts/passport.sh status --runtime
 ```
+
+Verify a live Linear target after obtaining its immutable IDs from the connected integration:
+
+```bash
+WORKTREE_PASSPORT_LINEAR_WORKSPACE_ID="workspace-id" \
+WORKTREE_PASSPORT_LINEAR_TEAM_ID="team-id" \
+WORKTREE_PASSPORT_LINEAR_PROJECT_ID="project-id" \
+  ~/.codex/skills/worktree-passport/scripts/passport.sh status --external
+```
+
+The external guard fails when live IDs are omitted or do not exactly match `targets.linear`. It never falls back to another Linear workspace, team, or project.
 
 `apply` and `remove` are dry-run operations unless `--yes` is supplied. Codex must show the complete plan and receive explicit approval before using `--yes`.
 

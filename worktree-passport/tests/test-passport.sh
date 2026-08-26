@@ -99,7 +99,7 @@ remote = "git@github.com:example/example-service.git"
 [projects.example-service.environments.development]
 aws_profile = "expected-profile"
 aws_account_id = "111111111111"
-aws_region = "ap-northeast-2"
+aws_region = "ap-northeast-1"
 eks_cluster = "expected-cluster"
 kube_context = "expected-context"
 namespace = "expected-namespace"
@@ -134,8 +134,8 @@ after=$(git -C "$REPO" config --local --list)
 [ "$rc" -eq 0 ] && [ "$before" = "$after" ] && contains "$out" 'Dry run only' && not_contains "$out" 'do-not-print-this-secret' && ok 'apply without --yes is a secret-safe dry run' || not_ok 'apply without --yes is a secret-safe dry run'
 [ ! -e "$REPO/service/.env" ] && [ ! -f "${MOCK_LOG}.direnv-allowed" ] && [ ! -f "${MOCK_LOG}.mise-trusted" ] && ok 'dry run does not trust, allow, or link' || not_ok 'dry run does not trust, allow, or link'
 
-out=$(run_in_repo apply --project example-service --environment development --owner codex --ticket PER-1 --expected-branch main 2>&1); rc=$?
-[ "$rc" -ne 0 ] && contains "$out" "ticket 'PER-1' must appear" && ok 'ticket must appear in branch' || not_ok 'ticket must appear in branch'
+out=$(run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-1 --expected-branch main 2>&1); rc=$?
+[ "$rc" -ne 0 ] && contains "$out" "ticket 'TASK-1' must appear" && ok 'ticket must appear in branch' || not_ok 'ticket must appear in branch'
 
 MOCK_DIRENV_ALLOWED=false out=$(run_in_repo apply --project example-service --environment development --owner codex --expected-branch main --yes 2>&1); rc=$?
 [ "$rc" -eq 0 ] && [ "$(git -C "$REPO" config --get extensions.worktreeConfig)" = true ] && [ "$(git -C "$REPO" config --worktree --get passport.project)" = example-service ] && [ "$(git -C "$REPO" config --worktree --get passport.environment)" = development ] && [ "$(git -C "$REPO" config --worktree --get passport.owner)" = codex ] && [ "$(git -C "$REPO" config --worktree --get passport.expected-branch)" = main ] && ok 'apply --yes enables worktree config and writes Passport' || { printf '%s\n' "$out"; not_ok 'apply --yes enables worktree config and writes Passport'; }
@@ -160,7 +160,7 @@ config_before=$(shasum -a 256 "$WORKTREE_PASSPORT_CONFIG" | awk '{print $1}')
 out=$(run_in_repo status --runtime 2>&1); rc=$?
 [ "$rc" -eq 0 ] && contains "$out" 'AWS caller account: 111111111111 [match]' && contains "$out" 'namespace access: verified' && ok 'runtime guard verifies configured AWS and Kubernetes targets' || { printf '%s\n' "$out"; not_ok 'runtime guard verifies configured AWS and Kubernetes targets'; }
 log=$(cat "$MOCK_LOG")
-contains "$log" 'aws --profile expected-profile --region ap-northeast-2 sts get-caller-identity' && contains "$log" 'kubectl --context expected-context --namespace expected-namespace get namespace expected-namespace' && not_contains "$log" 'use-context' && ok 'runtime commands use explicit targets and never switch context' || not_ok 'runtime commands use explicit targets and never switch context'
+contains "$log" 'aws --profile expected-profile --region ap-northeast-1 sts get-caller-identity' && contains "$log" 'kubectl --context expected-context --namespace expected-namespace get namespace expected-namespace' && not_contains "$log" 'use-context' && ok 'runtime commands use explicit targets and never switch context' || not_ok 'runtime commands use explicit targets and never switch context'
 if printf '%s\n' "$log" | awk '/^kubectl / && $0 !~ /--context expected-context --namespace expected-namespace/ { bad=1 } END { exit bad }'; then ok 'every kubectl invocation carries the expected context and namespace'; else not_ok 'every kubectl invocation carries the expected context and namespace'; fi
 config_after=$(shasum -a 256 "$WORKTREE_PASSPORT_CONFIG" | awk '{print $1}')
 [ "$config_before" = "$config_after" ] && not_contains "$log" 'configure set' && not_contains "$log" 'update-kubeconfig' && ok 'runtime verification does not modify AWS, kubeconfig, or personal config' || not_ok 'runtime verification does not modify AWS, kubeconfig, or personal config'
@@ -185,22 +185,59 @@ log=$(cat "$MOCK_LOG")
 [ "$rc" -ne 0 ] && contains "$out" 'current context was not used' && not_contains "$log" ' get namespace ' && ok 'missing kube context fails without namespace or cluster fallback' || not_ok 'missing kube context fails without namespace or cluster fallback'
 export MOCK_KUBE_CONTEXT=expected-context
 
+cp "$WORKTREE_PASSPORT_CONFIG" "$TEST_ROOT/projects.before-linear.toml"
+cat >>"$WORKTREE_PASSPORT_CONFIG" <<'EOF'
+
+[projects.example-service.targets.linear]
+workspace_id = "workspace-123"
+team_id = "team-123"
+team_key = "TASK"
+project_id = "project-123"
+project_name = "Example Project"
+EOF
+git -C "$REPO" config --worktree passport.ticket TASK-123
+
+out=$(run_in_repo status 2>&1); rc=$?
+[ "$rc" -eq 0 ] && contains "$out" 'Linear target (expected)' && contains "$out" 'ticket team match: yes' && ok 'status resolves Linear target from project and ticket' || not_ok 'status resolves Linear target from project and ticket'
+
+out=$(run_in_repo status --external 2>&1); rc=$?
+[ "$rc" -ne 0 ] && contains "$out" 'live Linear workspace/team/project IDs were not supplied' && contains "$out" 'no fallback attempted' && ok 'external guard fails closed without live Linear IDs' || not_ok 'external guard fails closed without live Linear IDs'
+
+export WORKTREE_PASSPORT_LINEAR_WORKSPACE_ID=workspace-123
+export WORKTREE_PASSPORT_LINEAR_TEAM_ID=team-123
+export WORKTREE_PASSPORT_LINEAR_PROJECT_ID=project-123
+out=$(run_in_repo status --external 2>&1); rc=$?
+[ "$rc" -eq 0 ] && contains "$out" 'live Linear identity: verified' && ok 'external guard verifies exact live Linear target IDs' || not_ok 'external guard verifies exact live Linear target IDs'
+
+export WORKTREE_PASSPORT_LINEAR_TEAM_ID=other-team
+out=$(run_in_repo status --external 2>&1); rc=$?
+[ "$rc" -ne 0 ] && contains "$out" 'Linear team mismatch' && contains "$out" 'no fallback attempted' && ok 'Linear team mismatch fails without fallback' || not_ok 'Linear team mismatch fails without fallback'
+export WORKTREE_PASSPORT_LINEAR_TEAM_ID=team-123
+
+git -C "$REPO" config --worktree passport.ticket OTHER-123
+out=$(run_in_repo status 2>&1); rc=$?
+[ "$rc" -ne 0 ] && contains "$out" 'ticket team match: no' && ok 'ticket prefix mismatch fails against configured Linear team' || not_ok 'ticket prefix mismatch fails against configured Linear team'
+
+git -C "$REPO" config --worktree --unset-all passport.ticket
+unset WORKTREE_PASSPORT_LINEAR_WORKSPACE_ID WORKTREE_PASSPORT_LINEAR_TEAM_ID WORKTREE_PASSPORT_LINEAR_PROJECT_ID
+cp "$TEST_ROOT/projects.before-linear.toml" "$WORKTREE_PASSPORT_CONFIG"
+
 out=$(run_in_repo remove 2>&1); rc=$?
 [ "$rc" -eq 0 ] && [ "$(git -C "$REPO" config --worktree --get passport.project)" = example-service ] && contains "$out" 'Dry run only' && ok 'remove without --yes changes nothing' || not_ok 'remove without --yes changes nothing'
 head_before=$(git -C "$REPO" rev-parse HEAD)
 run_in_repo remove --yes >/dev/null
 [ -z "$(git -C "$REPO" config --worktree --get passport.project 2>/dev/null || true)" ] && [ "$(git -C "$REPO" rev-parse HEAD)" = "$head_before" ] && [ -d "$REPO" ] && ok 'remove --yes clears only Passport keys' || not_ok 'remove --yes clears only Passport keys'
 
-NEW_WT="$TEST_ROOT/example-service-PER-2-feature"
-out=$(run_in_repo apply --project example-service --environment development --owner codex --ticket PER-2 --expected-branch codex/PER-2-feature --create --worktree "$NEW_WT" --base main 2>&1); rc=$?
+NEW_WT="$TEST_ROOT/example-service-TASK-2-feature"
+out=$(run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-2 --expected-branch codex/TASK-2-feature --create --worktree "$NEW_WT" --base main 2>&1); rc=$?
 [ "$rc" -eq 0 ] && [ ! -e "$NEW_WT" ] && contains "$out" 'git worktree add' && ok 'new-worktree apply previews without creating' || not_ok 'new-worktree apply previews without creating'
 
-out=$(run_in_repo apply --project example-service --environment development --owner codex --ticket PER-2 --expected-branch codex/PER-2-feature --create --worktree "$NEW_WT" --base main --yes 2>&1); rc=$?
-[ "$rc" -eq 0 ] && [ -d "$NEW_WT" ] && [ "$(git -C "$NEW_WT" branch --show-current)" = codex/PER-2-feature ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.project)" = example-service ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.environment)" = development ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.ticket)" = PER-2 ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.owner)" = codex ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.expected-branch)" = codex/PER-2-feature ] && ok 'approved create makes sibling worktree and all five Passport values' || { printf '%s\n' "$out"; not_ok 'approved create makes sibling worktree and all five Passport values'; }
+out=$(run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-2 --expected-branch codex/TASK-2-feature --create --worktree "$NEW_WT" --base main --yes 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ -d "$NEW_WT" ] && [ "$(git -C "$NEW_WT" branch --show-current)" = codex/TASK-2-feature ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.project)" = example-service ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.environment)" = development ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.ticket)" = TASK-2 ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.owner)" = codex ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.expected-branch)" = codex/TASK-2-feature ] && ok 'approved create makes sibling worktree and all five Passport values' || { printf '%s\n' "$out"; not_ok 'approved create makes sibling worktree and all five Passport values'; }
 
-assert_failure 'existing worktree path or branch is never overwritten' run_in_repo apply --project example-service --environment development --owner codex --ticket PER-2 --expected-branch codex/PER-2-feature --create --worktree "$NEW_WT" --base main
-assert_failure 'ticket must appear in new worktree directory' run_in_repo apply --project example-service --environment development --owner codex --ticket PER-3 --expected-branch codex/PER-3-feature --create --worktree "$TEST_ROOT/example-service-feature" --base main
-assert_failure 'worktree outside primary repository siblings is rejected' run_in_repo apply --project example-service --environment development --owner codex --ticket PER-4 --expected-branch codex/PER-4-feature --create --worktree "$TEST_ROOT/nested/example-service-PER-4-feature" --base main
+assert_failure 'existing worktree path or branch is never overwritten' run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-2 --expected-branch codex/TASK-2-feature --create --worktree "$NEW_WT" --base main
+assert_failure 'ticket must appear in new worktree directory' run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-3 --expected-branch codex/TASK-3-feature --create --worktree "$TEST_ROOT/example-service-feature" --base main
+assert_failure 'worktree outside primary repository siblings is rejected' run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-4 --expected-branch codex/TASK-4-feature --create --worktree "$TEST_ROOT/nested/example-service-TASK-4-feature" --base main
 
 cp "$WORKTREE_PASSPORT_CONFIG" "$TEST_ROOT/projects.good.toml"
 rm -f "$REPO/service/.env"

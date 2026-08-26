@@ -1,6 +1,6 @@
 ---
 name: worktree-passport
-description: Onboard projects and verify or manage per-worktree identity, local bootstrap readiness, and explicit AWS/EKS runtime targets. Use for initial Passport registration, worktree creation or inspection, workspace identity, worktree metadata, or resuming work across repositories.
+description: Onboard projects and verify or manage per-worktree identity, local bootstrap readiness, explicit AWS/EKS runtime targets, and Linear workspace targets. Use for initial Passport registration, worktree creation or inspection, workspace identity, worktree metadata, Linear issue work, or resuming work across repositories.
 ---
 
 # Worktree Passport
@@ -9,7 +9,7 @@ Use the bundled `scripts/passport.sh` to establish which repository, worktree, b
 
 ## Start with inspection
 
-Run `scripts/passport.sh status` before proposing worktree changes. Add `--runtime` only when the task needs AWS or Kubernetes access; it performs read-only, fail-closed target verification.
+Run `scripts/passport.sh status` before proposing worktree changes. Add `--runtime` only when the task needs AWS or Kubernetes access. For Linear issue work, read [references/linear-target.md](references/linear-target.md) and use `--external` with the live workspace, team, and project IDs returned by the connected Linear integration.
 
 If Passport is absent, infer a proposal from the repository, branch, task, and `~/.codex/worktree-passport/projects.toml`, but do not write it yet. Do not infer a runtime target that is not declared in that file.
 
@@ -38,6 +38,10 @@ Combine `passport.project` and `passport.environment` with the personal configur
 - Never fall back to the default AWS profile, current kube context, another cluster, or another namespace.
 - Treat target-verification failure separately from a verified target containing no resource.
 - Never run `aws configure`, `aws eks update-kubeconfig`, or `kubectl config use-context` as part of Passport.
+
+## External workspace guard
+
+Keep the expected Linear workspace, team, and project in the personal `projects.toml`; keep only the issue identifier in `passport.ticket`. Before reading or mutating Linear issues, verify the live connected target using the workflow in [references/linear-target.md](references/linear-target.md). Never fall back to another workspace, team, or project, and never store a Linear token in Passport.
 
 ## Boundaries and verification
 
