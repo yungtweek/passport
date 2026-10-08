@@ -5,6 +5,7 @@ Worktree Passport is a personal Codex skill that keeps Git worktree identity, lo
 ## What it does
 
 - Records project, environment, ticket, owner, and expected branch in Git's worktree-specific configuration.
+- Uses the ChatGPT/Codex desktop app to create managed worktrees, then registers their actual workspace path with Passport.
 - Shows a complete dry-run before creating a worktree or changing Passport metadata.
 - Checks mise trust, direnv allow state, and configured Git-ignored env symlinks.
 - Verifies the selected AWS account and Kubernetes context/namespace with explicit targets.
@@ -22,6 +23,7 @@ Passport does not create or modify AWS profiles, kubeconfig, shell startup files
     ├── SKILL.md
     ├── references/
     │   ├── linear-target.md
+    │   ├── managed-worktrees.md
     │   └── project-initialization.md
     ├── scripts/
     │   └── passport.sh
@@ -92,6 +94,12 @@ Store target names only. Never add access keys, secret keys, session tokens, SSO
 Linear IDs are non-secret target identifiers. Never store a Linear API key, OAuth token, cookie, or connector credential in this file.
 
 ## Use
+
+New worktrees requested through the skill use the desktop app's managed creation tools. The app chooses the path; Passport prepares an intended branch, identity, and configured env links in the returned workspace. Standalone shell `apply --create` remains available for explicitly requested non-managed Git worktrees.
+
+A managed checkout initially on detached HEAD can use `apply ... --new-branch` to preview branch creation and Passport registration together. It does not impose the standalone creation mode's sibling-path or ticket-directory rule. See [the managed workflow](worktree-passport/references/managed-worktrees.md).
+
+Personal env source paths remain independent of the checkout: `~/` and absolute sources stay fixed, relative sources are based on the personal `projects.toml` directory, and env targets are relative to the actual workspace. Missing sources or a copied `.env` conflicting with a configured link stop application without overwriting files. Passport creates links before mise/direnv bootstrap.
 
 Inspect the current worktree:
 

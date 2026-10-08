@@ -24,8 +24,11 @@ project_name = "Example Project"
 # Optional. If omitted, a repository-root .envrc is detected automatically.
 direnv_rc = ".envrc"
 
-# Keep one source/target pair per line. Sources are personal files; targets must
-# be inside the worktree, Git-ignored, and absent before Passport creates links.
+# Keep one source/target pair per line. Absolute and ~/ sources stay fixed;
+# relative sources are based on this config's directory, never the checkout.
+# Targets are relative to the actual worktree, Git-ignored, and absent (or
+# already the correct link). Symlinked target parents and copied .env conflicts
+# are rejected. This also applies to app-managed worktree paths.
 env_links = [
   { source = "~/.config/worktree-passport/env/example-service/service.env", target = "service/.env" }
 ]

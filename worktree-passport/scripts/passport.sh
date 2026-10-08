@@ -5,6 +5,16 @@ set -u
 PROGRAM=${0##*/}
 MIN_SHARED_MISE_VERSION=2026.7.5
 CONFIG_FILE=${WORKTREE_PASSPORT_CONFIG:-${CODEX_HOME:-$HOME/.codex}/worktree-passport/projects.toml}
+# Keep configuration and self-invocation stable when apply changes directories.
+case "$CONFIG_FILE" in
+  '~/'*) CONFIG_FILE="$HOME/${CONFIG_FILE#'~/'}" ;;
+  /*) ;;
+  *) CONFIG_FILE="$PWD/$CONFIG_FILE" ;;
+esac
+if [ -d "$(dirname "$CONFIG_FILE")" ]; then
+  CONFIG_FILE=$(cd "$(dirname "$CONFIG_FILE")" && pwd -P)/${CONFIG_FILE##*/}
+fi
+SCRIPT_PATH=$(cd "$(dirname "$0")" && pwd -P)/${0##*/}
 
 say() { printf '%s\n' "$*"; }
 err() { printf '%s: %s\n' "$PROGRAM" "$*" >&2; }
@@ -99,7 +109,7 @@ toml_env_links() {
 expand_personal_path() {
   case "$1" in
     '~') printf '%s\n' "$HOME" ;;
-    '~/'*) printf '%s/%s\n' "$HOME" "${1#~/}" ;;
+    '~/'*) printf '%s/%s\n' "$HOME" "${1#'~/'}" ;;
     /*) printf '%s\n' "$1" ;;
     *) printf '%s/%s\n' "$(dirname "$CONFIG_FILE")" "$1" ;;
   esac
@@ -158,6 +168,20 @@ path_within_worktree() {
   esac
 }
 
+# A lexical relative path can still escape through a symlinked parent.
+env_target_within_worktree() {
+  local root=$1 target=$2 parent part current
+  path_within_worktree "$target" || return 1
+  parent=$(dirname "$target"); current=$root
+  while [ "$parent" != . ] && [ -n "$parent" ]; do
+    part=${parent%%/*}
+    current="$current/$part"
+    [ ! -L "$current" ] || return 1
+    [ ! -e "$current" ] || [ -d "$current" ] || return 1
+    case "$parent" in */*) parent=${parent#*/} ;; *) break ;; esac
+  done
+}
+
 bootstrap_section() {
   printf 'projects.%s.environments.%s.bootstrap\n' "$1" "$2"
 }
@@ -203,9 +227,10 @@ show_bootstrap_status() {
     while IFS="$(printf '\t')" read -r source target; do
       [ -n "$source" ] || continue
       expanded=$(expand_personal_path "$source")
-      if [ -L "$root/$target" ] && [ "$(readlink "$root/$target")" = "$expanded" ]; then state=linked
-      elif [ -e "$root/$target" ] || [ -L "$root/$target" ]; then state='occupied (not changed)'
+      if ! env_target_within_worktree "$root" "$target"; then state='invalid target path'
       elif [ ! -f "$expanded" ]; then state='source missing'
+      elif [ -L "$root/$target" ] && [ "$(readlink "$root/$target")" = "$expanded" ]; then state=linked
+      elif [ -e "$root/$target" ] || [ -L "$root/$target" ]; then state='occupied (not changed)'
       elif ! git -C "$root" check-ignore -q -- "$target"; then state='target not ignored'
       else state='ready to link'
       fi
@@ -373,6 +398,7 @@ status_command() {
   owner=$(passport_get_at "$root" owner)
   expected=$(passport_get_at "$root" expected-branch)
 
+  say "Personal configuration: $CONFIG_FILE"
   say "Repository root: $root"
   say "Git common directory: $common"
   say "Worktree path: $root"
@@ -459,9 +485,10 @@ plan_bootstrap() {
 
   while IFS="$(printf '\t')" read -r source target; do
     [ -n "$source" ] || continue
-    path_within_worktree "$target" || { err "invalid env target path: $target"; return 1; }
+    env_target_within_worktree "$target_root" "$target" || { err "invalid env target path (including symlinked parents): $target"; return 1; }
     expanded=$(expand_personal_path "$source")
     [ -f "$expanded" ] || { err "env source is missing: $expanded"; return 1; }
+    git -C "$source_root" check-ignore -q -- "$target" || { err "env target is not Git-ignored: $target"; return 1; }
     if [ -e "$target_root/$target" ] || [ -L "$target_root/$target" ]; then
       if [ -L "$target_root/$target" ] && [ "$(readlink "$target_root/$target")" = "$expanded" ]; then
         say "  env link already correct: $expanded -> $target_root/$target"
@@ -470,7 +497,6 @@ plan_bootstrap() {
       err "env target already exists and will not be overwritten: $target_root/$target"
       return 1
     fi
-    git -C "$source_root" check-ignore -q -- "$target" || { err "env target is not Git-ignored: $target"; return 1; }
     say "  planned link: $expanded -> $target_root/$target"
     any=true
   done <<EOF
@@ -484,6 +510,23 @@ EOF
 apply_bootstrap() {
   local root=$1 project=$2 environment=$3 section config state rc source target expanded
   section=$(bootstrap_section "$project" "$environment")
+  # Prepare env links before trusting/allowing tools that may load them.
+  while IFS="$(printf '\t')" read -r source target; do
+    [ -n "$source" ] || continue
+    expanded=$(expand_personal_path "$source")
+    [ -f "$expanded" ] || { err "env source disappeared before apply: $expanded"; return 1; }
+    env_target_within_worktree "$root" "$target" || { err "invalid env target path (including symlinked parents): $target"; return 1; }
+    git -C "$root" check-ignore -q -- "$target" || { err "env target is not Git-ignored: $target"; return 1; }
+    if [ -L "$root/$target" ] && [ "$(readlink "$root/$target")" = "$expanded" ]; then continue; fi
+    if [ -e "$root/$target" ] || [ -L "$root/$target" ]; then
+      err "env target appeared before apply and will not be overwritten: $root/$target"
+      return 1
+    fi
+    mkdir -p "$(dirname "$root/$target")" || return 1
+    ln -s "$expanded" "$root/$target" || { err "failed to create env link: $root/$target"; return 1; }
+  done <<EOF
+$(toml_env_links "$section")
+EOF
   config=$(detect_mise_config "$root")
   if [ -n "$config" ]; then
     state=$(mise_state "$config")
@@ -501,26 +544,10 @@ apply_bootstrap() {
       [ "$state" = allowed ] || { err "direnv verification failed after allow: $root"; return 1; }
     fi
   fi
-  while IFS="$(printf '\t')" read -r source target; do
-    [ -n "$source" ] || continue
-    expanded=$(expand_personal_path "$source")
-    if [ -L "$root/$target" ] && [ "$(readlink "$root/$target")" = "$expanded" ]; then continue; fi
-    [ -f "$expanded" ] || { err "env source disappeared before apply: $expanded"; return 1; }
-    path_within_worktree "$target" || { err "invalid env target path: $target"; return 1; }
-    if [ -e "$root/$target" ] || [ -L "$root/$target" ]; then
-      err "env target appeared before apply and will not be overwritten: $root/$target"
-      return 1
-    fi
-    git -C "$root" check-ignore -q -- "$target" || { err "env target is not Git-ignored: $target"; return 1; }
-    mkdir -p "$(dirname "$root/$target")" || return 1
-    ln -s "$expanded" "$root/$target" || { err "failed to create env link: $root/$target"; return 1; }
-  done <<EOF
-$(toml_env_links "$section")
-EOF
 }
 
 apply_command() {
-  local project= environment= ticket= owner= expected= worktree= base= create=false yes=false root target source_root primary parent expected_parent branch enabled
+  local project= environment= ticket= owner= expected= worktree= base= create=false new_branch=false yes=false root target source_root primary parent expected_parent branch enabled
   while [ $# -gt 0 ]; do
     case "$1" in
       --project|--environment|--ticket|--owner|--expected-branch|--worktree|--base)
@@ -531,6 +558,7 @@ apply_command() {
         esac
         shift 2 ;;
       --create) create=true; shift ;;
+      --new-branch) new_branch=true; shift ;;
       --yes) yes=true; shift ;;
       *) die "unknown apply option: $1" ;;
     esac
@@ -542,6 +570,7 @@ apply_command() {
   require_repo
   root=$(repo_root); source_root=$root; target=$root; branch=$(current_branch)
   if $create; then
+    $new_branch && die '--new-branch cannot be combined with --create'
     [ -n "$worktree" ] && [ -n "$base" ] || die '--create requires --worktree and --base'
     target=$(absolute_new_path "$worktree") || die 'worktree parent directory does not exist'
     primary=$(primary_worktree); primary=$(cd "$primary" && pwd -P)
@@ -553,7 +582,13 @@ apply_command() {
   else
     [ -z "$worktree" ] || die '--worktree requires --create'
     [ -z "$base" ] || die '--base requires --create'
-    [ "$branch" = "$expected" ] || die "expected branch '$expected' does not match current branch '$branch'"
+    if $new_branch; then
+      git symbolic-ref --quiet HEAD >/dev/null 2>&1 && die '--new-branch requires a detached HEAD worktree'
+      git check-ref-format --branch "$expected" >/dev/null 2>&1 || die "invalid branch name: $expected"
+      git show-ref --verify --quiet "refs/heads/$expected" && die "branch already exists: $expected"
+    else
+      [ "$branch" = "$expected" ] || die "expected branch '$expected' does not match current branch '$branch'"
+    fi
   fi
   if [ -n "$ticket" ]; then
     case "$expected" in *"$ticket"*) ;; *) die "ticket '$ticket' must appear in branch '$expected'" ;; esac
@@ -562,6 +597,7 @@ apply_command() {
   validate_linear_target "$source_root" "$project" "$ticket" false || die 'Linear target validation failed; nothing was changed'
 
   say 'Worktree Passport plan:'
+  say "  personal configuration: $CONFIG_FILE"
   say "  repository: $root"
   say "  base branch: ${base:-not applicable}"
   say "  target branch: $expected"
@@ -586,6 +622,7 @@ apply_command() {
   worktree_config_enabled && enabled=true || enabled=false
   [ "$enabled" = true ] || print_cmd git config extensions.worktreeConfig true
   $create && print_cmd git worktree add -b "$expected" "$target" "$base"
+  $new_branch && print_cmd git -C "$target" switch -c "$expected"
   print_cmd git -C "$target" config --worktree passport.project "$project"
   print_cmd git -C "$target" config --worktree passport.environment "$environment"
   [ -n "$ticket" ] && print_cmd git -C "$target" config --worktree passport.ticket "$ticket"
@@ -597,6 +634,9 @@ apply_command() {
 
   $yes || { say 'Dry run only. Re-run this exact plan with --yes after explicit approval.'; return 0; }
 
+  if $new_branch; then
+    git -C "$target" switch -c "$expected" || die 'failed to create branch; no Passport values were written'
+  fi
   if [ "$enabled" != true ]; then git config extensions.worktreeConfig true || die 'failed to enable extensions.worktreeConfig'; fi
   if $create; then
     git worktree add -b "$expected" "$target" "$base" || die 'failed to create worktree; no Passport values were written'
@@ -609,7 +649,7 @@ apply_command() {
   git -C "$target" config --worktree passport.expected-branch "$expected" || die "Passport write failed; worktree preserved at $target"
   apply_bootstrap "$target" "$project" "$environment" || die "Passport applied but bootstrap partially failed; worktree preserved at $target"
   say 'Applied. Verification:'
-  (cd "$target" && "$0" status) || die 'apply completed but verification failed'
+  (cd "$target" && WORKTREE_PASSPORT_CONFIG="$CONFIG_FILE" "$SCRIPT_PATH" status) || die 'apply completed but verification failed'
 }
 
 remove_command() {
@@ -634,7 +674,7 @@ usage() {
   cat <<'EOF'
 Usage:
   passport.sh status [--runtime] [--external]
-  passport.sh apply --project NAME --environment NAME --owner NAME --expected-branch BRANCH [--ticket ID] [--create --worktree PATH --base BRANCH] [--yes]
+  passport.sh apply --project NAME --environment NAME --owner NAME --expected-branch BRANCH [--ticket ID] [--new-branch | --create --worktree PATH --base BRANCH] [--yes]
   passport.sh remove [--yes]
 EOF
 }
