@@ -1,6 +1,6 @@
 ---
 name: worktree-passport
-description: Onboard projects and verify or manage per-worktree identity, local bootstrap readiness, explicit AWS/EKS runtime targets, and Linear workspace targets. Use for initial Passport registration, worktree creation or inspection, workspace identity, worktree metadata, Linear issue work, or resuming work across repositories.
+description: Create app-managed worktrees and register or verify their Passport identity, local bootstrap readiness, AWS/EKS runtime targets, and Linear targets. Use for Passport registration, worktree creation or inspection, and resuming work across repositories.
 ---
 
 # Worktree Passport
@@ -13,6 +13,16 @@ Run `scripts/passport.sh status` before proposing worktree changes. Add `--runti
 
 If Passport is absent, infer a proposal from the repository, branch, task, and `~/.codex/worktree-passport/projects.toml`, but do not write it yet. Do not infer a runtime target that is not declared in that file.
 
+## Worktree creation
+
+For new worktrees, use the ChatGPT/Codex desktop app's managed worktree tools. Read [references/managed-worktrees.md](references/managed-worktrees.md) for creation, detached-HEAD registration, environment-path checks, and cleanup. The app chooses the checkout path; Passport records identity and prepares local env links in the returned workspace. The shell script's `--create` mode remains available only for explicitly requested standalone Git worktrees.
+
+When work begins in an app-created worktree, register that checkout rather than creating another. Resolve the project from existing Passport values or the exact remote and personal project mapping, not from an app-generated directory name.
+
+Resolve the bundled script and personal configuration to absolute paths before changing directories. Keep the same absolute `WORKTREE_PASSPORT_CONFIG` for preflight, application, and verification. Env sources are personal paths; relative sources are anchored to the personal config directory, and targets are anchored to the actual worktree. Do not automatically register additional projects.
+
+Resolve the returned workspace to its physical absolute path (`pwd -P`) and use it consistently, including `direnv exec`. Path aliases can have different direnv allow identities even when they refer to the same files.
+
 ## Initial project registration
 
 When the user asks to initialize, onboard, or automatically register a project, read [references/project-initialization.md](references/project-initialization.md) and follow it. Automate repository discovery and candidate collection, but require the user to choose any ambiguous environment, AWS profile, kube context, or namespace. Preview the personal configuration update and worktree registration together, then apply both after one explicit approval.
@@ -21,7 +31,7 @@ When the user asks to initialize, onboard, or automatically register a project, 
 
 Before creating a worktree, recording Passport values, trusting a mise config, allowing direnv, or creating configured env symlinks:
 
-1. Run `passport.sh apply ...` without `--yes` and show the complete preview.
+1. Run `passport.sh apply ...` without `--yes` and show the complete preview. For an app-managed creation, use the staged preview and actual-path checks in [references/managed-worktrees.md](references/managed-worktrees.md).
 2. Summarize the repository, base branch, any planned `main` synchronization, new branch, worktree path, ticket, owner, environment, expected runtime target, Git changes, local bootstrap changes, and unchanged boundaries.
 3. Wait for explicit approval of that exact plan. Do not reuse approval from an earlier or different plan.
 4. If repository, path, branch, ticket, environment, or bootstrap plan changes, show the refreshed preview and ask again.

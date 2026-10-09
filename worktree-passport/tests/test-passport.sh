@@ -7,6 +7,7 @@ PASSPORT=$(cd "$SCRIPT_DIR/../scripts" && pwd -P)/passport.sh
 TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/worktree-passport-test.XXXXXX")
 PASS=0
 FAIL=0
+REAL_DIRENV=$(command -v direnv 2>/dev/null || true)
 
 cleanup() { rm -rf "$TEST_ROOT"; }
 trap cleanup EXIT INT TERM
@@ -50,7 +51,12 @@ printf 'direnv %s\n' "$*" >>"$MOCK_LOG"
 case "${1:-}" in
   status)
     if [ "$MOCK_DIRENV_ALLOWED" = true ] || [ -f "${MOCK_LOG}.direnv-allowed" ]; then printf 'Found RC allowed 0\n'; else printf 'Found RC allowed 1\n'; fi ;;
-  allow) : >"${MOCK_LOG}.direnv-allowed" ;;
+  allow)
+    if [ -n "${MOCK_REQUIRED_ENV_TARGET:-}" ] && [ ! -f "$MOCK_REQUIRED_ENV_TARGET" ]; then
+      printf 'required env target missing before direnv allow\n' >&2
+      exit 1
+    fi
+    : >"${MOCK_LOG}.direnv-allowed" ;;
 esac
 EOF
 
@@ -299,6 +305,121 @@ contains "$out" 'worktree trust sharing: unsupported' && ok 'old mise version is
 export MOCK_MISE_VERSION=2026.8.0
 out=$(run_in_repo status 2>&1)
 contains "$out" 'worktree trust sharing: supported' && ok 'new mise version is identified' || not_ok 'new mise version is identified'
+
+# Exercise the app layout using an isolated detached Git checkout, not a live
+# app tool. The random container and repository directory have no ticket.
+MANAGED="$TEST_ROOT/app worktrees/random/example-service"
+mkdir -p "$(dirname "$MANAGED")" "$TEST_ROOT/personal config" "$TEST_ROOT/local tools"
+git -C "$REPO" worktree add -q --detach "$MANAGED" main
+cp "$PASSPORT" "$TEST_ROOT/local tools/passport.sh"
+sed "s#source = \"$TEST_ROOT/personal/service.env\"#source = \"../personal/service.env\"#" "$TEST_ROOT/projects.good.toml" >"$TEST_ROOT/personal config/projects.toml"
+MANAGED_CONFIG="$TEST_ROOT/personal config/projects.toml"
+run_in_managed() { (cd "$MANAGED" && WORKTREE_PASSPORT_CONFIG="$MANAGED_CONFIG" "$PASSPORT" "$@"); }
+managed_apply() { run_in_managed apply --project example-service --environment development --owner codex --ticket TASK-50 --expected-branch codex/TASK-50-managed "$@"; }
+
+before=$(git -C "$MANAGED" config --local --list)
+head_before=$(git -C "$MANAGED" rev-parse HEAD)
+out=$(managed_apply --new-branch 2>&1); rc=$?
+[ "$rc" -eq 0 ] && contains "$out" 'switch -c' && [ -z "$(git -C "$MANAGED" branch --show-current)" ] && ! git -C "$MANAGED" show-ref --verify --quiet refs/heads/codex/TASK-50-managed && [ ! -e "$MANAGED/service/.env" ] && [ "$before" = "$(git -C "$MANAGED" config --local --list)" ] && ok 'managed dry run previews branch and env links without mutation' || { printf '%s\n' "$out"; not_ok 'managed dry run previews branch and env links without mutation'; }
+
+assert_failure 'detached registration requires explicit branch creation' managed_apply
+assert_failure 'managed registration rejects an existing branch' run_in_managed apply --project example-service --environment development --owner codex --expected-branch main --new-branch
+assert_failure 'managed registration rejects an invalid branch' run_in_managed apply --project example-service --environment development --owner codex --expected-branch 'bad..branch' --new-branch
+assert_failure 'managed branch creation cannot also create a standalone worktree' managed_apply --new-branch --create --worktree "$TEST_ROOT/unused-TASK-50" --base main
+
+# Missing sources must fail before creating a branch or writing metadata.
+mv "$TEST_ROOT/personal/service.env" "$TEST_ROOT/personal/service.env.saved"
+out=$(managed_apply --new-branch --yes 2>&1); rc=$?
+[ "$rc" -ne 0 ] && [ -z "$(git -C "$MANAGED" branch --show-current)" ] && [ -z "$(git -C "$MANAGED" config --worktree --get passport.project 2>/dev/null || true)" ] && ok 'managed bootstrap failure preserves detached HEAD and metadata' || not_ok 'managed bootstrap failure preserves detached HEAD and metadata'
+mv "$TEST_ROOT/personal/service.env.saved" "$TEST_ROOT/personal/service.env"
+
+mkdir -p "$MANAGED/service"
+printf 'copied-by-app\n' >"$MANAGED/service/.env"
+copied_before=$(shasum -a 256 "$MANAGED/service/.env" | awk '{print $1}')
+out=$(managed_apply --new-branch --yes 2>&1); rc=$?
+[ "$rc" -ne 0 ] && contains "$out" 'will not be overwritten' && [ "$copied_before" = "$(shasum -a 256 "$MANAGED/service/.env" | awk '{print $1}')" ] && [ -z "$(git -C "$MANAGED" branch --show-current)" ] && ok 'app-copied env conflict is preserved before branch creation' || not_ok 'app-copied env conflict is preserved before branch creation'
+rm -f "$MANAGED/service/.env"
+
+# Relative script and config invocations must remain valid after apply cd.
+rm -f "${MOCK_LOG}.direnv-allowed"
+export MOCK_DIRENV_ALLOWED=false
+export MOCK_REQUIRED_ENV_TARGET="$MANAGED/service/.env"
+out=$(cd "$MANAGED" && WORKTREE_PASSPORT_CONFIG="../../../personal config/projects.toml" "../../../local tools/passport.sh" apply --project example-service --environment development --owner codex --ticket TASK-50 --expected-branch codex/TASK-50-managed --new-branch --yes 2>&1); rc=$?
+unset MOCK_REQUIRED_ENV_TARGET
+[ "$rc" -eq 0 ] && [ "$(git -C "$MANAGED" branch --show-current)" = codex/TASK-50-managed ] && [ "$(git -C "$MANAGED" rev-parse HEAD)" = "$head_before" ] && contains "$out" 'Applied. Verification:' && contains "$out" '[linked]' && [ "$MANAGED/service/.env" -ef "$TEST_ROOT/personal/service.env" ] && ok 'managed registration resolves relative config and source with spaces across cd' || { printf '%s\n' "$out"; not_ok 'managed registration resolves relative config and source with spaces across cd'; }
+[ -f "${MOCK_LOG}.direnv-allowed" ] && ok 'env link exists before direnv allow' || not_ok 'env link exists before direnv allow'
+[ "$(git -C "$MANAGED" config --worktree --get passport.ticket)" = TASK-50 ] && [ -z "$(git -C "$REPO" config --worktree --get passport.project 2>/dev/null || true)" ] && [ "$(git -C "$REPO" branch --show-current)" = main ] && [ "$(git -C "$MANAGED" status --porcelain)" = '' ] && ok 'managed Passport is worktree-local and leaves source checkout unchanged' || not_ok 'managed Passport is worktree-local and leaves source checkout unchanged'
+assert_failure 'new-branch does not switch an existing named worktree' managed_apply --new-branch
+
+config_before=$(shasum -a 256 "$MANAGED_CONFIG" | awk '{print $1}')
+out=$(cd "$MANAGED/service" && WORKTREE_PASSPORT_CONFIG="$MANAGED_CONFIG" "$PASSPORT" status --runtime 2>&1); rc=$?
+[ "$rc" -eq 0 ] && contains "$out" '[linked]' && contains "$out" 'AWS caller account: 111111111111 [match]' && [ "$config_before" = "$(shasum -a 256 "$MANAGED_CONFIG" | awk '{print $1}')" ] && ok 'nested managed cwd uses the same personal source and runtime targets' || { printf '%s\n' "$out"; not_ok 'nested managed cwd uses the same personal source and runtime targets'; }
+
+# Reach the isolated fixture through ~/ without changing HOME or its files.
+home_source="~/../../${TEST_ROOT#/}/personal/service.env"
+sed "s#source = \"../personal/service.env\"#source = \"$home_source\"#" "$MANAGED_CONFIG" >"$TEST_ROOT/tilde.toml"
+rm -f "$MANAGED/service/.env"
+out=$(cd "$MANAGED" && WORKTREE_PASSPORT_CONFIG="$TEST_ROOT/tilde.toml" "$PASSPORT" apply --project example-service --environment development --owner codex --ticket TASK-50 --expected-branch codex/TASK-50-managed --yes 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ "$(readlink "$MANAGED/service/.env")" = "$HOME/${home_source#'~/'}" ] && [ "$MANAGED/service/.env" -ef "$TEST_ROOT/personal/service.env" ] && not_contains "$out" 'do-not-print-this-secret' && ok 'tilde env source resolves to home without literal tilde or secret output' || { printf '%s\n' "$out"; not_ok 'tilde env source resolves to home without literal tilde or secret output'; }
+out=$(cd "$MANAGED" && WORKTREE_PASSPORT_CONFIG="$TEST_ROOT/tilde.toml" "$PASSPORT" apply --project example-service --environment development --owner codex --expected-branch codex/TASK-50-managed --yes 2>&1); rc=$?
+[ "$rc" -eq 0 ] && contains "$out" 'env link already correct' && ok 'correct home-based link is reused' || not_ok 'correct home-based link is reused'
+
+mv "$TEST_ROOT/personal/service.env" "$TEST_ROOT/personal/service.env.saved"
+out=$(cd "$MANAGED" && WORKTREE_PASSPORT_CONFIG="$TEST_ROOT/tilde.toml" "$PASSPORT" status 2>&1)
+contains "$out" '[source missing]' && ok 'status identifies a broken previously-correct env link' || not_ok 'status identifies a broken previously-correct env link'
+mv "$TEST_ROOT/personal/service.env.saved" "$TEST_ROOT/personal/service.env"
+
+rm -f "$MANAGED/service/.env"
+rmdir "$MANAGED/service"
+mkdir -p "$TEST_ROOT/outside"
+ln -s "$TEST_ROOT/outside" "$MANAGED/service"
+out=$(managed_apply --yes 2>&1); rc=$?
+[ "$rc" -ne 0 ] && contains "$out" 'invalid env target path' && [ ! -e "$TEST_ROOT/outside/.env" ] && ok 'symlinked env parent cannot redirect a managed link outside checkout' || not_ok 'symlinked env parent cannot redirect a managed link outside checkout'
+
+# Optional live loading check: only known synthetic envrc/env content, with
+# isolated direnv config and allow storage. No user credentials or rc are read.
+if [ -n "$REAL_DIRENV" ]; then
+  mkdir -p "$TEST_ROOT/live-bin" "$TEST_ROOT/live personal" "$TEST_ROOT/live-config" "$TEST_ROOT/live-data"
+  ln -s "$REAL_DIRENV" "$TEST_ROOT/live-bin/direnv"
+  LIVE_REPO="$TEST_ROOT/live-source"
+  LIVE_WT="$TEST_ROOT/app worktrees/live-random/live-service"
+  git init -q -b main "$LIVE_REPO"
+  git -C "$LIVE_REPO" config user.name Test
+  git -C "$LIVE_REPO" config user.email test@example.invalid
+  printf 'service/.env\n' >"$LIVE_REPO/.gitignore"
+  printf 'dotenv service/.env\n' >"$LIVE_REPO/.envrc"
+  git -C "$LIVE_REPO" add .gitignore .envrc
+  git -C "$LIVE_REPO" commit -q -m synthetic-bootstrap
+  mkdir -p "$(dirname "$LIVE_WT")"
+  git -C "$LIVE_REPO" worktree add -q --detach "$LIVE_WT" main
+  LIVE_WT=$(cd "$LIVE_WT" && pwd -P)
+  printf 'PASSPORT_PATH_CHECK=synthetic-managed-value\n' >"$TEST_ROOT/live personal/service.env"
+  cat >"$TEST_ROOT/live personal/projects.toml" <<'EOF'
+[projects.live-service.environments.local.bootstrap]
+env_links = [
+  { source = "service.env", target = "service/.env" }
+]
+EOF
+  live_run() {
+    (
+      export PATH="$TEST_ROOT/live-bin:$PATH"
+      export XDG_CONFIG_HOME="$TEST_ROOT/live-config"
+      export XDG_DATA_HOME="$TEST_ROOT/live-data"
+      export DIRENV_CONFIG="$TEST_ROOT/live-config"
+      export WORKTREE_PASSPORT_CONFIG="$TEST_ROOT/live personal/projects.toml"
+      unset PASSPORT_PATH_CHECK
+      cd "$LIVE_WT" && "$@"
+    )
+  }
+  out=$(live_run "$PASSPORT" apply --project live-service --environment local --owner codex --expected-branch codex/live-path-check --new-branch --yes 2>&1); rc=$?
+  [ "$rc" -eq 0 ] && contains "$out" 'direnv state: allowed' && [ "$LIVE_WT/service/.env" -ef "$TEST_ROOT/live personal/service.env" ] && ok 'real direnv allows managed envrc after the link is prepared' || { printf '%s\n' "$out"; not_ok 'real direnv allows managed envrc after the link is prepared'; }
+  out=$(live_run "$REAL_DIRENV" exec "$LIVE_WT" /bin/bash -c 'test "$PASSPORT_PATH_CHECK" = synthetic-managed-value' 2>&1); rc=$?
+  [ "$rc" -eq 0 ] && not_contains "$out" 'synthetic-managed-value' && ok 'real direnv loads the intended personal env value without printing it' || { printf '%s\n' "$out"; not_ok 'real direnv loads the intended personal env value without printing it'; }
+  out=$(live_run "$REAL_DIRENV" exec "$LIVE_WT/service" /bin/bash -c 'test "$PASSPORT_PATH_CHECK" = synthetic-managed-value' 2>&1); rc=$?
+  [ "$rc" -eq 0 ] && ok 'real env loading remains correct from a nested managed directory' || not_ok 'real env loading remains correct from a nested managed directory'
+else
+  printf '# live direnv loading checks skipped (direnv not installed)\n'
+fi
 
 printf '1..%d\n' "$((PASS + FAIL))"
 printf '# pass=%d fail=%d\n' "$PASS" "$FAIL"

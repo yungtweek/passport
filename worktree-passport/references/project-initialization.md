@@ -7,7 +7,7 @@ Use this workflow when a project does not yet have a runtime profile in `~/.code
 Start inside the project and run `scripts/passport.sh status`. Collect these values read-only:
 
 - repository root and primary worktree
-- repository directory name as the proposed project key
+- an existing project key matched by exact remote, or the primary repository directory name as a proposed key (not an app-generated worktree/container name)
 - exact `origin` remote URL
 - current branch
 - existing Passport values
@@ -76,8 +76,11 @@ Add a bootstrap section only for values that can be safely established:
 - A repository `.envrc` may supply `direnv_rc = ".envrc"`.
 - Never invent an env source path or inspect env contents. Add `env_links` only when the user identifies each personal source.
 - Verify every target is inside the worktree and Git-ignored before proposing a link.
+- Resolve relative env sources against the real personal config directory. When previewing a proposed config in a temporary directory, use absolute source paths in the preview copy so staging does not change their meaning. Preserve the existing relative paths in the real file unless their conversion is explicitly part of the plan.
 
 Run the normal `passport.sh apply ...` dry-run against the proposed temporary configuration by setting `WORKTREE_PASSPORT_CONFIG` for that process. This lets the preview include the future runtime and bootstrap values without modifying the real personal configuration.
+
+For an app-managed checkout, follow [managed-worktrees.md](managed-worktrees.md). Use its returned workspace and `--new-branch` when starting from detached HEAD; do not invoke standalone `--create`.
 
 Show one combined plan containing:
 
