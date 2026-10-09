@@ -406,6 +406,47 @@ primary_worktree() {
   git worktree list --porcelain | awk '/^worktree / { sub(/^worktree /, ""); print; exit }'
 }
 
+validate_main_base_sync() {
+  local primary=$1 branch origin dirty
+  branch=$(git -C "$primary" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+  [ "$branch" = main ] || {
+    err "main synchronization failed: primary worktree is on '${branch:-detached}', not 'main'"
+    return 1
+  }
+  dirty=$(git -C "$primary" status --porcelain --untracked-files=normal 2>/dev/null) || {
+    err 'main synchronization failed: primary worktree status could not be read'
+    return 1
+  }
+  [ -z "$dirty" ] || {
+    err 'main synchronization failed: primary main worktree is dirty; no pull attempted'
+    return 1
+  }
+  origin=$(git -C "$primary" config --get remote.origin.url 2>/dev/null || true)
+  [ -n "$origin" ] || {
+    err "main synchronization failed: remote 'origin' is not configured"
+    return 1
+  }
+}
+
+sync_main_base() {
+  local primary=$1 head fetched
+  validate_main_base_sync "$primary" || return 1
+  git -C "$primary" pull --ff-only origin main || {
+    err 'main synchronization failed: fast-forward pull from origin/main failed; worktree was not created'
+    return 1
+  }
+  head=$(git -C "$primary" rev-parse HEAD 2>/dev/null) || return 1
+  fetched=$(git -C "$primary" rev-parse FETCH_HEAD 2>/dev/null) || {
+    err 'main synchronization failed: fetched origin/main commit could not be verified'
+    return 1
+  }
+  [ "$head" = "$fetched" ] || {
+    err 'main synchronization failed: local main is not identical to origin/main after pull; worktree was not created'
+    return 1
+  }
+  say 'Primary main synchronized with origin/main (fast-forward only).'
+}
+
 absolute_new_path() {
   local raw=$1 parent base
   case "$raw" in
@@ -550,6 +591,9 @@ apply_command() {
     [ ! -e "$target" ] && [ ! -L "$target" ] || die "worktree path already exists: $target"
     git show-ref --verify --quiet "refs/heads/$expected" && die "branch already exists: $expected"
     git rev-parse --verify "$base^{commit}" >/dev/null 2>&1 || die "base does not resolve to a commit: $base"
+    if [ "$base" = main ]; then
+      validate_main_base_sync "$primary" || die 'main synchronization preflight failed; nothing was changed'
+    fi
   else
     [ -z "$worktree" ] || die '--worktree requires --create'
     [ -z "$base" ] || die '--base requires --create'
@@ -585,6 +629,9 @@ apply_command() {
   say '  Git changes:'
   worktree_config_enabled && enabled=true || enabled=false
   [ "$enabled" = true ] || print_cmd git config extensions.worktreeConfig true
+  if $create && [ "$base" = main ]; then
+    print_cmd git -C "$primary" pull --ff-only origin main
+  fi
   $create && print_cmd git worktree add -b "$expected" "$target" "$base"
   print_cmd git -C "$target" config --worktree passport.project "$project"
   print_cmd git -C "$target" config --worktree passport.environment "$environment"
@@ -597,6 +644,9 @@ apply_command() {
 
   $yes || { say 'Dry run only. Re-run this exact plan with --yes after explicit approval.'; return 0; }
 
+  if $create && [ "$base" = main ]; then
+    sync_main_base "$primary" || die 'main synchronization stopped the apply before worktree creation'
+  fi
   if [ "$enabled" != true ]; then git config extensions.worktreeConfig true || die 'failed to enable extensions.worktreeConfig'; fi
   if $create; then
     git worktree add -b "$expected" "$target" "$base" || die 'failed to create worktree; no Passport values were written'

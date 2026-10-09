@@ -82,11 +82,14 @@ EOF
 chmod +x "$TEST_ROOT/bin/"*
 export PATH="$TEST_ROOT/bin:$PATH"
 
+REMOTE="$TEST_ROOT/origin.git"
+git init --bare -q --initial-branch=main "$REMOTE"
+
 REPO="$TEST_ROOT/example-service"
 git init -q -b main "$REPO"
 git -C "$REPO" config user.name Test
 git -C "$REPO" config user.email test@example.invalid
-git -C "$REPO" remote add origin git@github.com:example/example-service.git
+git -C "$REPO" remote add origin "$REMOTE"
 printf 'service/.env\n' >"$REPO/.gitignore"
 printf 'base\n' >"$REPO/tracked.txt"
 git -C "$REPO" add .gitignore tracked.txt
@@ -94,7 +97,7 @@ git -C "$REPO" commit -q -m init
 
 cat >"$WORKTREE_PASSPORT_CONFIG" <<EOF
 [projects.example-service]
-remote = "git@github.com:example/example-service.git"
+remote = "$REMOTE"
 
 [projects.example-service.environments.development]
 aws_profile = "expected-profile"
@@ -127,6 +130,7 @@ printf '[tools]\nnode = "22"\n' >"$REPO/.mise.toml"
 printf 'do-not-print-this-secret\n' >"$TEST_ROOT/personal/service.env"
 git -C "$REPO" add .envrc .mise.toml
 git -C "$REPO" commit -q -m envrc
+git -C "$REPO" push -q -u origin main
 
 before=$(git -C "$REPO" config --local --list)
 out=$(run_in_repo apply --project example-service --environment development --owner codex --expected-branch main 2>&1); rc=$?
@@ -229,11 +233,43 @@ run_in_repo remove --yes >/dev/null
 [ -z "$(git -C "$REPO" config --worktree --get passport.project 2>/dev/null || true)" ] && [ "$(git -C "$REPO" rev-parse HEAD)" = "$head_before" ] && [ -d "$REPO" ] && ok 'remove --yes clears only Passport keys' || not_ok 'remove --yes clears only Passport keys'
 
 NEW_WT="$TEST_ROOT/example-service-TASK-2-feature"
+UPSTREAM="$TEST_ROOT/upstream"
+git clone -q "$REMOTE" "$UPSTREAM"
+git -C "$UPSTREAM" config user.name Upstream
+git -C "$UPSTREAM" config user.email upstream@example.invalid
+printf 'upstream\n' >>"$UPSTREAM/tracked.txt"
+git -C "$UPSTREAM" add tracked.txt
+git -C "$UPSTREAM" commit -q -m upstream
+git -C "$UPSTREAM" push -q origin main
+main_before=$(git -C "$REPO" rev-parse HEAD)
+remote_head=$(git --git-dir="$REMOTE" rev-parse main)
 out=$(run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-2 --expected-branch codex/TASK-2-feature --create --worktree "$NEW_WT" --base main 2>&1); rc=$?
-[ "$rc" -eq 0 ] && [ ! -e "$NEW_WT" ] && contains "$out" 'git worktree add' && ok 'new-worktree apply previews without creating' || not_ok 'new-worktree apply previews without creating'
+[ "$rc" -eq 0 ] && [ ! -e "$NEW_WT" ] && [ "$(git -C "$REPO" rev-parse HEAD)" = "$main_before" ] && contains "$out" 'pull --ff-only origin main' && contains "$out" 'git worktree add' && ok 'main-based worktree preview includes pull without changing main' || not_ok 'main-based worktree preview includes pull without changing main'
 
 out=$(run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-2 --expected-branch codex/TASK-2-feature --create --worktree "$NEW_WT" --base main --yes 2>&1); rc=$?
-[ "$rc" -eq 0 ] && [ -d "$NEW_WT" ] && [ "$(git -C "$NEW_WT" branch --show-current)" = codex/TASK-2-feature ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.project)" = example-service ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.environment)" = development ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.ticket)" = TASK-2 ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.owner)" = codex ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.expected-branch)" = codex/TASK-2-feature ] && ok 'approved create makes sibling worktree and all five Passport values' || { printf '%s\n' "$out"; not_ok 'approved create makes sibling worktree and all five Passport values'; }
+[ "$rc" -eq 0 ] && [ -d "$NEW_WT" ] && [ "$(git -C "$REPO" rev-parse HEAD)" = "$remote_head" ] && [ "$(git -C "$NEW_WT" rev-parse HEAD)" = "$remote_head" ] && [ "$(git -C "$NEW_WT" branch --show-current)" = codex/TASK-2-feature ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.project)" = example-service ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.environment)" = development ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.ticket)" = TASK-2 ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.owner)" = codex ] && [ "$(git -C "$NEW_WT" config --worktree --get passport.expected-branch)" = codex/TASK-2-feature ] && ok 'approved create updates main and branches from verified origin commit' || { printf '%s\n' "$out"; not_ok 'approved create updates main and branches from verified origin commit'; }
+
+DIRTY_WT="$TEST_ROOT/example-service-TASK-7-feature"
+printf 'dirty\n' >>"$REPO/tracked.txt"
+out=$(run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-7 --expected-branch codex/TASK-7-feature --create --worktree "$DIRTY_WT" --base main 2>&1); rc=$?
+[ "$rc" -ne 0 ] && [ ! -e "$DIRTY_WT" ] && contains "$out" 'primary main worktree is dirty' && contains "$out" 'no pull attempted' && ok 'dirty primary main blocks pull and worktree creation' || not_ok 'dirty primary main blocks pull and worktree creation'
+git -C "$REPO" restore tracked.txt
+
+git -C "$REPO" branch release
+RELEASE_WT="$TEST_ROOT/example-service-TASK-8-feature"
+out=$(run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-8 --expected-branch codex/TASK-8-feature --create --worktree "$RELEASE_WT" --base release 2>&1); rc=$?
+[ "$rc" -eq 0 ] && [ ! -e "$RELEASE_WT" ] && not_contains "$out" 'pull --ff-only' && contains "$out" 'git worktree add' && ok 'non-main base is never synchronized automatically' || not_ok 'non-main base is never synchronized automatically'
+
+printf 'local-only\n' >"$REPO/local-only.txt"
+git -C "$REPO" add local-only.txt
+git -C "$REPO" commit -q -m local-only
+printf 'remote-only\n' >"$UPSTREAM/remote-only.txt"
+git -C "$UPSTREAM" add remote-only.txt
+git -C "$UPSTREAM" commit -q -m remote-only
+git -C "$UPSTREAM" push -q origin main
+DIVERGED_WT="$TEST_ROOT/example-service-TASK-9-feature"
+out=$(run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-9 --expected-branch codex/TASK-9-feature --create --worktree "$DIVERGED_WT" --base main --yes 2>&1); rc=$?
+[ "$rc" -ne 0 ] && [ ! -e "$DIVERGED_WT" ] && ! git -C "$REPO" show-ref --verify --quiet refs/heads/codex/TASK-9-feature && contains "$out" 'fast-forward pull from origin/main failed' && ok 'diverged main fails before branch and worktree creation' || { printf '%s\n' "$out"; not_ok 'diverged main fails before branch and worktree creation'; }
 
 assert_failure 'existing worktree path or branch is never overwritten' run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-2 --expected-branch codex/TASK-2-feature --create --worktree "$NEW_WT" --base main
 assert_failure 'ticket must appear in new worktree directory' run_in_repo apply --project example-service --environment development --owner codex --ticket TASK-3 --expected-branch codex/TASK-3-feature --create --worktree "$TEST_ROOT/example-service-feature" --base main

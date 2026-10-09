@@ -22,12 +22,16 @@ When the user asks to initialize, onboard, or automatically register a project, 
 Before creating a worktree, recording Passport values, trusting a mise config, allowing direnv, or creating configured env symlinks:
 
 1. Run `passport.sh apply ...` without `--yes` and show the complete preview.
-2. Summarize the repository, base branch, new branch, worktree path, ticket, owner, environment, expected runtime target, Git changes, local bootstrap changes, and unchanged boundaries.
+2. Summarize the repository, base branch, any planned `main` synchronization, new branch, worktree path, ticket, owner, environment, expected runtime target, Git changes, local bootstrap changes, and unchanged boundaries.
 3. Wait for explicit approval of that exact plan. Do not reuse approval from an earlier or different plan.
 4. If repository, path, branch, ticket, environment, or bootstrap plan changes, show the refreshed preview and ask again.
 5. After approval, repeat the same command with `--yes`.
 
-One approval may cover the previewed worktree creation, non-secret Git metadata, mise trust, direnv allow, and env symlinks. It does not cover dependency installation, shell changes, cloud configuration, builds, pushes, deployments, commits, or PRs unless the user's request separately authorizes them.
+One approval may cover the previewed fast-forward-only `main` pull, worktree creation, non-secret Git metadata, mise trust, direnv allow, and env symlinks. It does not cover dependency installation, shell changes, cloud configuration, builds, pushes, deployments, commits, or PRs unless the user's request separately authorizes them.
+
+## Main base synchronization
+
+When creating a worktree with `--base main`, require the primary worktree to be on a clean `main` with an `origin` remote. Show `git -C <primary> pull --ff-only origin main` in the dry-run and execute it only in the approved `--yes` run. Continue only when the resulting local `main` is exactly the fetched `origin/main` commit. Stop before worktree creation when the primary worktree is dirty, detached, on another branch, locally ahead, diverged, or cannot fast-forward. Do not install Git hooks or use rebase, merge commits, reset, stash, or force updates. Bases other than the exact name `main` are not synchronized automatically.
 
 ## Runtime guard
 

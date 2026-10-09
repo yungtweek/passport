@@ -6,6 +6,7 @@ Worktree Passport is a personal Codex skill that keeps Git worktree identity, lo
 
 - Records project, environment, ticket, owner, and expected branch in Git's worktree-specific configuration.
 - Shows a complete dry-run before creating a worktree or changing Passport metadata.
+- Fast-forwards a clean primary `main` from `origin/main` before creating a `main`-based worktree.
 - Checks mise trust, direnv allow state, and configured Git-ignored env symlinks.
 - Verifies the selected AWS account and Kubernetes context/namespace with explicit targets.
 - Verifies a Linear ticket's workspace, team, project, and team-key prefix before issue work.
@@ -117,6 +118,8 @@ WORKTREE_PASSPORT_LINEAR_PROJECT_ID="project-id" \
 The external guard fails when live IDs are omitted or do not exactly match `targets.linear`. It never falls back to another Linear workspace, team, or project.
 
 `apply` and `remove` are dry-run operations unless `--yes` is supplied. Codex must show the complete plan and receive explicit approval before using `--yes`.
+
+When a new worktree uses `--base main`, the dry-run includes `git pull --ff-only origin main`. The approved run performs that pull before creating the worktree and stops if the primary worktree is dirty, is not on `main`, cannot fast-forward, or contains commits not present on `origin/main`. Other base branches are not synchronized automatically, and Passport does not install Git hooks.
 
 Typical Codex requests include:
 
